@@ -1,0 +1,6 @@
+pandas==2.2.2
+numpy==1.26.4
+python-dotenv==1.0.1
+PyYAML==6.0.2
+MetaTrader5>=5.0.5370
+requests==2.32.3

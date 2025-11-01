@@ -1,0 +1,70 @@
+# config.yaml
+general:
+  symbol: EURUSD
+  timeframe: M15
+  live_context_lookback: 1000
+  out_dir: ./out
+
+strategy:
+  # --- Use the mean-revert plugin (engine calls this) ---
+  use_plugin: true
+  plugin_module: user_strategy.mean_reversion_mt5
+  plugin_function: generate_signals
+  plugin_shift_next_bar: true
+  atr_period: 14
+
+  # --- Exits: prev-bar extreme SL + R-multiple TP (implemented in engine) ---
+  use_custom_sl_tp: true
+  custom_exit_mode: prev_bar_extreme
+  tp_multiple: 3.0
+  min_sl_buffer_atr: 1.60
+  atr_sl_mult: 1 # (used when use_custom_sl_tp: false)
+  atr_tp_mult: 3
+
+exits:
+  breakeven_enable: true
+  breakeven_at_R: 1.3
+  trail_enable: true
+  trail_atr_mult: 1.9
+  max_hold_bars: 24
+  scale_out_enable: true # when true -> scale out at the mid-band
+  scale_out_fraction: 0 # close this fraction at the mean
+  rr_after_scale: 3.0 # set TP of the remainder to 3R after scale-out
+  bb_period_for_mean: 20 # mid-band = SMA(close, N); keep 20 to match signals
+
+filters:
+  max_spread_points: 25
+  session:
+    enabled: true # turn on to skip minutes around major opens
+    skip_after_minutes: 20 # 10–20 is typical
+    # UTC session times (make them broker/UTC aligned for your data)
+    london_open_utc: "08:00"
+    newyork_open_utc: "13:30"
+risk:
+  risk_per_trade: 0.01
+  min_lot: auto # or a number, e.g., 0.01
+  max_lot: 5
+  round_to_step: true
+  max_concurrent_trades_per_symbol: 2
+  fixed_lots: 0
+circuit_breakers:
+  enabled: false
+  max_daily_loss_currency: 50
+  max_consec_losses: 1
+  max_trades_per_day: 96
+  no_trade_friday_after_hour: 20
+
+# >>> This section fixes your KeyError and lets run.py backtest <<<
+backtest:
+  lookback: 24000 # you can still override with --lookback
+  use_ticks_for_exits: true
+  max_bars_for_ticks: 800
+
+advisor:
+  enable: false
+
+debug:
+  force_trade_when_no_signal: true
+  force_side: auto
+  force_lots: 0.1
+  force_sl_tp_points: 300
