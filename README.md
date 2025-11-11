@@ -1,2 +1,2 @@
 # Forex-bot
-#we are auto bots
+# we are auto bots
