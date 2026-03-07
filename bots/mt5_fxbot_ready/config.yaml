@@ -17,7 +17,7 @@ strategy:
   use_custom_sl_tp: true
   custom_exit_mode: prev_bar_extreme
   tp_multiple: 3.0
-  min_sl_buffer_atr: 1.60
+  min_sl_buffer_atr: 0.40
   atr_sl_mult: 1 # (used when use_custom_sl_tp: false)
   atr_tp_mult: 3
 
@@ -28,7 +28,7 @@ exits:
   trail_atr_mult: 1.9
   max_hold_bars: 24
   scale_out_enable: true # when true -> scale out at the mid-band
-  scale_out_fraction: 0 # close this fraction at the mean
+  scale_out_fraction: 0.50 # close this fraction at the mean
   rr_after_scale: 3.0 # set TP of the remainder to 3R after scale-out
   bb_period_for_mean: 20 # mid-band = SMA(close, N); keep 20 to match signals
 
@@ -41,18 +41,22 @@ filters:
     london_open_utc: "08:00"
     newyork_open_utc: "13:30"
 risk:
-  risk_per_trade: 0.01
+  risk_per_trade: 0.005
   min_lot: auto # or a number, e.g., 0.01
-  max_lot: 5
+  max_lot: 1
   round_to_step: true
-  max_concurrent_trades_per_symbol: 2
+  max_concurrent_trades_per_symbol: 1
   fixed_lots: 0
+  max_portfolio_risk_pct: 0.03
+  drawdown_reduce_at_pct: 0.05
+  drawdown_halt_at_pct: 0.10
+  dynamic_sizing: true
 circuit_breakers:
-  enabled: false
-  max_daily_loss_currency: 50
-  max_consec_losses: 1
-  max_trades_per_day: 96
-  no_trade_friday_after_hour: 20
+  enabled: true
+  max_daily_loss_currency: 100
+  max_consec_losses: 4
+  max_trades_per_day: 10
+  no_trade_friday_after_hour: 18
 
 # >>> This section fixes your KeyError and lets run.py backtest <<<
 backtest:
@@ -63,8 +67,41 @@ backtest:
 advisor:
   enable: false
 
+regime:
+  enabled: true
+  adx_trending_threshold: 25
+  adx_choppy_threshold: 15
+  bb_width_ranging_pctl: 30
+  lookback_bars: 100
+  strategy_map:
+    ranging: user_strategy.mean_reversion_mt5
+    trending: user_strategy.trend_follow
+    choppy: null  # no trading in choppy markets
+
+multi_pair:
+  enabled: false
+  symbols:
+    - symbol: EURUSD
+      timeframe: M15
+    - symbol: GBPUSD
+      timeframe: M15
+    - symbol: USDJPY
+      timeframe: M15
+    - symbol: AUDUSD
+      timeframe: M15
+  correlation_threshold: 0.70
+  max_correlated_positions: 1
+
+multi_timeframe:
+  enabled: true
+  confirmation_tf: H1
+  trend_tf: H4
+  block_counter_trend: true
+  ema_fast: 50
+  ema_slow: 200
+
 debug:
-  force_trade_when_no_signal: true
+  force_trade_when_no_signal: false
   force_side: auto
   force_lots: 0.1
   force_sl_tp_points: 300
