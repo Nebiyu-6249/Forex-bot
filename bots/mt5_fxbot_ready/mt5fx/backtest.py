@@ -237,7 +237,13 @@ def backtest_once(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
                 # normal bar hit evaluation
                 hit = _bar_hit(pos.side, row, pos.tp, pos.sl, intrabar_mode=intrabar_mode)
                 if hit:
-                    exit_price = float(row["bid_o"] if pos.side == "long" else row["ask_o"])
+                    # Use actual SL/TP level as exit price, not bar open
+                    if hit == "tp":
+                        exit_price = float(pos.tp)
+                    elif hit == "sl":
+                        exit_price = float(pos.sl)
+                    else:
+                        exit_price = float(row["bid_o"] if pos.side == "long" else row["ask_o"])
                     tag = "be_trail" if (pos.be_applied or trail_on) and hit == "sl" else hit
 
                     pnl_pips = ((exit_price - pos.entry) if pos.side == "long" else (pos.entry - exit_price)) * 10000.0
@@ -311,12 +317,64 @@ def backtest_once(cfg: Dict[str, Any], df: pd.DataFrame) -> Dict[str, Any]:
             pos = Pos(side=side, entry=entry, sl=sl, tp=tp, time=df.iloc[i]["time"], lots=lots, r_price=r_price)
 
     tr_df = pd.DataFrame([t.__dict__ for t in trades])
-    win = float((tr_df["result"] == "tp").mean()) if not tr_df.empty else 0.0
+    # Win = any trade with positive PnL (not just TP exits)
+    win = float((tr_df["pnl_usd"] > 0).mean()) if not tr_df.empty else 0.0
 
-    return {
-        "trades": tr_df,          # includes pnl_usd, size_lots, scaled_out
-        "win_rate": win,
-    }
+    # Comprehensive statistics
+    stats = {"trades": tr_df, "win_rate": win}
+    if not tr_df.empty:
+        winners = tr_df[tr_df["pnl_usd"] > 0]
+        losers = tr_df[tr_df["pnl_usd"] <= 0]
+        gross_profit = float(winners["pnl_usd"].sum()) if not winners.empty else 0.0
+        gross_loss = abs(float(losers["pnl_usd"].sum())) if not losers.empty else 0.0
+
+        # Profit factor
+        stats["profit_factor"] = (gross_profit / gross_loss) if gross_loss > 0 else float("inf")
+
+        # Expectancy per trade
+        stats["expectancy"] = float(tr_df["pnl_usd"].mean())
+
+        # Average winner / loser
+        stats["avg_winner"] = float(winners["pnl_usd"].mean()) if not winners.empty else 0.0
+        stats["avg_loser"] = float(losers["pnl_usd"].mean()) if not losers.empty else 0.0
+
+        # Max drawdown
+        equity_curve = tr_df["pnl_usd"].cumsum() + equity
+        running_max = equity_curve.cummax()
+        drawdown = equity_curve - running_max
+        stats["max_drawdown_usd"] = float(drawdown.min())
+        stats["max_drawdown_pct"] = float((drawdown / running_max).min()) if running_max.max() > 0 else 0.0
+
+        # Sharpe ratio (annualized, ~252 trading days * ~24 M15 bars per day)
+        returns = tr_df["pnl_usd"] / equity  # approximate per-trade return
+        if returns.std() > 0:
+            bars_per_year = 252 * 24  # for M15
+            stats["sharpe_ratio"] = float(returns.mean() / returns.std() * np.sqrt(bars_per_year / max(1, len(returns))))
+        else:
+            stats["sharpe_ratio"] = 0.0
+
+        # R-multiple stats
+        r_multiples = []
+        for _, row in tr_df.iterrows():
+            r = abs(row["entry_price"] - row["sl"])
+            if r > 0:
+                rm = (row["exit_price"] - row["entry_price"]) / r if row["side"] == "long" else (row["entry_price"] - row["exit_price"]) / r
+                r_multiples.append(rm)
+        if r_multiples:
+            r_arr = np.array(r_multiples)
+            stats["avg_R"] = float(r_arr.mean())
+            stats["avg_R_winner"] = float(r_arr[r_arr > 0].mean()) if (r_arr > 0).any() else 0.0
+            stats["avg_R_loser"] = float(r_arr[r_arr <= 0].mean()) if (r_arr <= 0).any() else 0.0
+
+        stats["total_pnl"] = float(tr_df["pnl_usd"].sum())
+        stats["final_equity"] = float(equity_curve.iloc[-1]) if not equity_curve.empty else equity
+        stats["total_trades"] = len(tr_df)
+        stats["winners"] = len(winners)
+        stats["losers"] = len(losers)
+        stats["best_trade"] = float(tr_df["pnl_usd"].max())
+        stats["worst_trade"] = float(tr_df["pnl_usd"].min())
+
+    return stats
 
 
 def run_backtest(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -333,7 +391,19 @@ def run_backtest(cfg: Dict[str, Any]) -> Dict[str, Any]:
     summary = {
         "symbol": g["symbol"],
         "timeframe": g["timeframe"],
-        "trades": int(len(res["trades"])),
+        "total_trades": res.get("total_trades", int(len(res["trades"]))),
         "win_rate": round(res["win_rate"] * 100, 2),
+        "profit_factor": round(res.get("profit_factor", 0.0), 2),
+        "expectancy": round(res.get("expectancy", 0.0), 2),
+        "sharpe_ratio": round(res.get("sharpe_ratio", 0.0), 2),
+        "max_drawdown_pct": round(res.get("max_drawdown_pct", 0.0) * 100, 2),
+        "max_drawdown_usd": round(res.get("max_drawdown_usd", 0.0), 2),
+        "total_pnl": round(res.get("total_pnl", 0.0), 2),
+        "final_equity": round(res.get("final_equity", 0.0), 2),
+        "avg_R": round(res.get("avg_R", 0.0), 2),
+        "best_trade": round(res.get("best_trade", 0.0), 2),
+        "worst_trade": round(res.get("worst_trade", 0.0), 2),
+        "winners": res.get("winners", 0),
+        "losers": res.get("losers", 0),
     }
     return {"summary": summary, "trades": res["trades"]}
