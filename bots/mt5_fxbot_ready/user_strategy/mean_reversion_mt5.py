@@ -3,6 +3,13 @@
 Bollinger re-entry mean-reversion signal plugin (win-rate prioritized).
 Returns a Series aligned to df.index: +1 (long), -1 (short), 0 (flat).
 Execute on the next bar open. Size by ATR risk in the engine/backtest.
+
+Improvements over original:
+- BB_K raised from 1.2 to 1.8 for cleaner extremes (fewer false signals)
+- ADX threshold tightened from 29 to 25
+- Session filter (London+NY only) to avoid low-liquidity noise
+- Volume confirmation to ensure genuine reversal interest
+- Cooldown of 2 bars to prevent signal clusters
 """
 
 from __future__ import annotations
@@ -11,26 +18,35 @@ import numpy as np
 import pandas as pd
 
 # =============================== TUNABLES =============================== #
-# Win-rate > trade count: tightened vs earlier presets.
-BB_N: int        = 18    # Bollinger period
-BB_K: float      = 1.2 # Std-dev; higher => deeper extremes (fewer but cleaner)
+BB_N: int        = 20    # Bollinger period (standard)
+BB_K: float      = 1.8   # Std-dev; 1.8 catches real extremes (was 1.2 — too noisy)
 ATR_N: int       = 14
 ADX_N: int       = 14
-ADX_MAX: float   = 29 # trend must be weak (lower is stricter)
-SLOPE_MAX: float = 6.5e-05   # |slope(SMA200)| per bar (flatter is better)
+ADX_MAX: float   = 25    # trend must be weak (tightened from 29 for cleaner signals)
+SLOPE_MAX: float = 5.0e-05   # |slope(SMA200)| per bar (flatter is better)
 
-# Only trade when ATR percentile is not too high (avoid top 50% most volatile bars)
-ATR_PCTL_MAX: float = 0.95
+# Only trade when ATR percentile is not extreme
+ATR_PCTL_MAX: float = 0.90
 # Require room to revert: distance to mid in ATRs
-DIST_MIN_ATR: float = 0.15
-DIST_MAX_ATR: float = 1.40
+DIST_MIN_ATR: float = 0.20
+DIST_MAX_ATR: float = 1.60
 
 # Re-entry quality margins in ATRs
-OUTSIDE_ATR: float = 0.086 # previous bar outside by >= this * ATR(prev)
-INSIDE_ATR:  float = 0.04 # signal bar back inside by >= this * ATR(curr)
+OUTSIDE_ATR: float = 0.10  # previous bar outside by >= this * ATR(prev)
+INSIDE_ATR:  float = 0.05  # signal bar back inside by >= this * ATR(curr)
 
 # Cooldown to avoid signal clusters
-COOLDOWN: int = 0
+COOLDOWN: int = 2
+
+# Session filter (UTC hours) — only trade during London+NY sessions
+SESSION_FILTER: bool = True
+SESSION_START_UTC: int = 7    # London pre-open
+SESSION_END_UTC: int   = 17   # NY afternoon
+
+# Volume confirmation — require above-average tick volume on signal bar
+VOLUME_CONFIRM: bool = True
+VOLUME_LOOKBACK: int  = 20
+VOLUME_MIN_RATIO: float = 0.8  # signal bar volume >= 0.8 * avg volume
 # ====================================================================== #
 
 # --------------------------- indicator helpers -------------------------- #
@@ -89,6 +105,12 @@ def _pick(df: pd.DataFrame, names: List[str]) -> pd.Series:
             return df[n].astype(float)
     raise KeyError(f"Expected one of {names}, but got: {list(df.columns)}")
 
+def _pick_optional(df: pd.DataFrame, names: List[str]) -> pd.Series | None:
+    for n in names:
+        if n in df.columns:
+            return df[n].astype(float)
+    return None
+
 # ------------------------------- main API -------------------------------- #
 def generate_signals(df: pd.DataFrame, timeframe: str | None = None) -> pd.Series:
     """
@@ -128,8 +150,22 @@ def generate_signals(df: pd.DataFrame, timeframe: str | None = None) -> pd.Serie
     dist_ok_long  = (dist_long  >= DIST_MIN_ATR * atr) & (dist_long  <= DIST_MAX_ATR * atr)
     dist_ok_short = (dist_short >= DIST_MIN_ATR * atr) & (dist_short <= DIST_MAX_ATR * atr)
 
-    long_raw  = re_long  & dist_ok_long  & range_ok & low_vol_ok
-    short_raw = re_short & dist_ok_short & range_ok & low_vol_ok
+    # Session filter: only trade during London+NY hours
+    session_ok = pd.Series(True, index=df.index)
+    if SESSION_FILTER and "time" in df.columns:
+        hours = pd.to_datetime(df["time"]).dt.hour
+        session_ok = (hours >= SESSION_START_UTC) & (hours < SESSION_END_UTC)
+
+    # Volume confirmation: signal bar tick volume >= VOLUME_MIN_RATIO * avg
+    vol_ok = pd.Series(True, index=df.index)
+    if VOLUME_CONFIRM:
+        tick_vol = _pick_optional(df, ["tick_volume", "real_volume", "volume", "Volume"])
+        if tick_vol is not None:
+            avg_vol = tick_vol.rolling(VOLUME_LOOKBACK, min_periods=1).mean()
+            vol_ok = tick_vol >= (VOLUME_MIN_RATIO * avg_vol)
+
+    long_raw  = re_long  & dist_ok_long  & range_ok & low_vol_ok & session_ok & vol_ok
+    short_raw = re_short & dist_ok_short & range_ok & low_vol_ok & session_ok & vol_ok
     raw_sig = np.where(long_raw, 1, np.where(short_raw, -1, 0)).astype(int)
 
     # Cooldown
