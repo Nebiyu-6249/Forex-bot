@@ -12,6 +12,10 @@ strategy:
   plugin_function: generate_signals
   plugin_shift_next_bar: true
   atr_period: 14
+  # --- Fallback EMA params (used when use_plugin: false) ---
+  fast_ema: 20
+  slow_ema: 50
+  trend_ema: 200
 
   # --- Exits: prev-bar extreme SL + R-multiple TP (implemented in engine) ---
   use_custom_sl_tp: true
@@ -61,6 +65,7 @@ circuit_breakers:
 # >>> This section fixes your KeyError and lets run.py backtest <<<
 backtest:
   lookback: 24000 # you can still override with --lookback
+  start_equity: 2000 # starting equity for backtest sizing (match your real account)
   use_ticks_for_exits: true
   max_bars_for_ticks: 800
 
