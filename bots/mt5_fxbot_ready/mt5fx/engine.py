@@ -84,6 +84,7 @@ class LiveEngine:
         self._last_df = None       # last fetched bars (for scale-out mid-band calc)
         self._peak_equity = self._account_equity() or 10000.0
         self._reconnect_backoff = 2  # seconds
+        self._open_tickets = set()   # tickets we've opened (for exit tracking)
 
         # Trade journal
         out_dir = cfg["general"]["out_dir"]
@@ -420,7 +421,12 @@ class LiveEngine:
                     "type_time": mt5.ORDER_TIME_GTC,
                     "type_filling": mt5.ORDER_FILLING_IOC,
                 }
-                mt5.order_send(req)
+                result = mt5.order_send(req)
+                if result and result.retcode == mt5.TRADE_RETCODE_DONE:
+                    pnl = float(pos.profit)
+                    equity = self._account_equity()
+                    self.journal.record_exit(pos.ticket, px, pnl, "time", equity)
+                    self._open_tickets.discard(pos.ticket)
                 self.log.info("Closed position %s due to time-stop (%s bars).", pos.ticket, bars_open)
                 return
 
@@ -539,6 +545,51 @@ class LiveEngine:
             block_counter_trend=bool(mtf_cfg.get("block_counter_trend", True)),
         )
 
+    # ---------------------- Closed position tracking ----------------------
+
+    def _check_closed_positions(self):
+        """Detect positions closed by broker (SL/TP/trailing) and record exits in journal."""
+        if not self._open_tickets:
+            return
+
+        current_positions = mt5.positions_get(symbol=self.symbol) or []
+        current_tickets = {p.ticket for p in current_positions}
+        closed = self._open_tickets - current_tickets
+
+        for ticket in closed:
+            try:
+                now = datetime.utcnow()
+                start = datetime(now.year, now.month, now.day - 1) if now.hour < 1 else datetime(now.year, now.month, now.day)
+                deals = mt5.history_deals_get(start, now) or []
+                exit_deal = None
+                for d in deals:
+                    pid = getattr(d, "position_id", getattr(d, "position", None))
+                    if pid == ticket and getattr(d, "entry", None) == 1:  # exit deal
+                        exit_deal = d
+                        break
+
+                if exit_deal:
+                    pnl = float(getattr(exit_deal, "profit", 0.0))
+                    exit_price = float(getattr(exit_deal, "price", 0.0))
+                    comment = getattr(exit_deal, "comment", "")
+                    if "tp" in comment.lower():
+                        result = "tp"
+                    elif "sl" in comment.lower():
+                        result = "sl"
+                    elif "time-stop" in comment.lower():
+                        result = "time"
+                    else:
+                        result = "tp" if pnl > 0 else "sl"
+                    equity = self._account_equity()
+                    self.journal.record_exit(ticket, exit_price, pnl, result, equity)
+                    self.log.info("Journal: recorded exit for ticket %s, pnl=%.2f, result=%s", ticket, pnl, result)
+                else:
+                    self.log.warning("Could not find exit deal for ticket %s", ticket)
+            except Exception as e:
+                self.log.error("Error recording exit for ticket %s: %s", ticket, e)
+
+        self._open_tickets -= closed
+
     # ---------------------- Main loop ----------------------
 
     def run(self):
@@ -555,6 +606,9 @@ class LiveEngine:
             try:
                 # Write heartbeat
                 self._write_heartbeat()
+
+                # Check if any tracked positions were closed by broker (SL/TP/trail)
+                self._check_closed_positions()
 
                 # pull recent bars
                 rates = mt5.copy_rates_from_pos(self.symbol, self.tf, 0, self.lookback)
@@ -690,8 +744,9 @@ class LiveEngine:
                             res = self._place_market(side, sl, tp, deviation_points=10, lots=lots)
                             self.log.info("Order result: %s", res)
 
-                            # Record to journal
+                            # Record to journal and track ticket
                             if res and res.retcode == mt5.TRADE_RETCODE_DONE:
+                                self._open_tickets.add(res.order)
                                 self.journal.record_entry(
                                     ticket=res.order,
                                     symbol=self.symbol,
